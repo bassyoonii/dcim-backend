@@ -7,8 +7,7 @@ const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const ensureDefaultAdmin = require('./utils/ensureDefaultAdmin');
 const { startSupportNotificationJob } = require('./jobs/supportNotifications');
-
-dotenv.config();
+dotenv.config({ path: './.env' });
 
 const app = express();
 
@@ -87,6 +86,10 @@ app.use('/api/firewalls',    require('./routes/firewalls'));
 app.use('/api/reporting',    require('./routes/reporting'));
 app.use('/api/search',       require('./routes/search'));
 app.use('/api/dashboard',    require('./routes/dashboard'));
+app.use('/api/prometheus',   require('./routes/prometheus'));
+
+// quick check route to verify prometheus proxy is reachable
+app.get('/api/prometheus/check', (req, res) => res.json({ success: true, message: 'prometheus proxy registered' }));
 
 app.use((err, req, res, next) => {
   console.error(err.stack);

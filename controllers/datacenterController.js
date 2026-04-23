@@ -3,6 +3,7 @@ const Rack = require('../models/Rack');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { logAction } = require('../utils/auditLog');
 const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/queryHelpers');
+const { geocodeAddress } = require('../utils/geocode');
 
 // GET /api/datacenters
 const getDatacenters = async (req, res) => {
@@ -75,8 +76,21 @@ const getDatacenter = async (req, res) => {
 // POST /api/datacenters
 const createDatacenter = async (req, res) => {
   try {
+    const body = { ...req.body };
+    const location = body.location || {};
+
+    if (location.address && (!location.coordinates || !location.coordinates.lat || !location.coordinates.lng)) {
+      try {
+        const coords = await geocodeAddress([location.address, location.city, location.country].filter(Boolean).join(', '));
+        if (coords) location.coordinates = coords;
+      } catch (gerr) {
+        // ignore geocode failure, continue without coordinates
+      }
+    }
+
     const dc = await Datacenter.create({
-      ...req.body,
+      ...body,
+      location,
       createdBy: req.user.id
     });
 
@@ -91,9 +105,20 @@ const createDatacenter = async (req, res) => {
 // PUT /api/datacenters/:id
 const updateDatacenter = async (req, res) => {
   try {
+    const updateData = { ...req.body };
+    const loc = updateData.location;
+    if (loc && loc.address && (!loc.coordinates || !loc.coordinates.lat || !loc.coordinates.lng)) {
+      try {
+        const coords = await geocodeAddress([loc.address, loc.city, loc.country].filter(Boolean).join(', '));
+        if (coords) updateData.location = { ...loc, coordinates: coords };
+      } catch (gerr) {
+        // ignore geocode failure
+      }
+    }
+
     const dc = await Datacenter.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updateData,
       { new: true, runValidators: true }
     );
     if (!dc) return errorResponse(res, 'Datacenter not found', 404);
@@ -120,7 +145,71 @@ const deleteDatacenter = async (req, res) => {
   }
 };
 
+// GET /api/datacenters/locations
+const getDatacenterLocations = async (req, res) => {
+  try {
+    const { country } = req.query;
+    const filter = {
+      'location.coordinates.lat': { $exists: true },
+      'location.coordinates.lng': { $exists: true }
+    };
+    if (country) filter['location.country'] = country;
+
+    const dcs = await Datacenter.find(filter).select('name code location').lean();
+
+      const format = (req.query.format || '').toLowerCase();
+      const simple = (dcs || []).map((dc) => ({
+        id: String(dc._id),
+        name: dc.name || null,
+        code: dc.code || null,
+        address: dc.location?.address || null,
+        city: dc.location?.city || null,
+        country: dc.location?.country || null,
+        coordinates: dc.location?.coordinates || null
+      }));
+
+      if (format === 'geojson') {
+        const features = simple.map((s) => {
+          const coords = s.coordinates;
+          return {
+            type: 'Feature',
+            id: s.id,
+            properties: {
+              name: s.name,
+              code: s.code,
+              address: s.address,
+              city: s.city,
+              country: s.country
+            },
+            geometry: coords && typeof coords.lat === 'number' && typeof coords.lng === 'number'
+              ? { type: 'Point', coordinates: [coords.lng, coords.lat] }
+              : null
+          };
+        });
+        return successResponse(res, { type: 'FeatureCollection', features });
+      }
+
+      return successResponse(res, simple);
+  } catch (err) {
+    return errorResponse(res, err.message, 500);
+  }
+};
+
+// GET /api/datacenters/geocode?q=...  (proxy to backend geocode helper)
+const geocodeProxy = async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    if (!q) return successResponse(res, null);
+    const coords = await geocodeAddress(q);
+    return successResponse(res, coords);
+  } catch (err) {
+    return errorResponse(res, err.message, 500);
+  }
+};
+
 module.exports = {
   getDatacenters, getDatacenter,
+  getDatacenterLocations,
+  geocodeProxy,
   createDatacenter, updateDatacenter, deleteDatacenter
 };
