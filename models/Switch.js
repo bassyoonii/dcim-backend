@@ -18,6 +18,8 @@ const switchSchema = new mongoose.Schema({
   osVersion: { type: String, trim: true, maxlength: 128 },
   acquisitionDate: { type: Date },
   supportExpiry: { type: Date },
+  firstNotifiedAt: Date,
+  lastNotifiedAt: Date,
   totalPorts: { type: Number, default: 24, min: 1 },
   portTypes: [{ type: String, trim: true, maxlength: 64 }],
   usedPorts: { type: Number, default: 0, min: 0 },

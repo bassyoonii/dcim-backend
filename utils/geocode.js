@@ -6,7 +6,7 @@ function geocodeAddress(address) {
   return new Promise((resolve, reject) => {
     if (!address) return resolve(null);
     const query = encodeURIComponent(address);
-    const url = `https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`;
+    const url = `https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1&accept-language=fr`;
 
     const options = {
       headers: { 'User-Agent': 'dcim-backend/1.0 (your@email)' }
@@ -32,4 +32,31 @@ function geocodeAddress(address) {
   });
 }
 
-module.exports = { geocodeAddress };
+function reverseGeocode(lat, lng) {
+  return new Promise((resolve, reject) => {
+    const latNum = Number(lat);
+    const lngNum = Number(lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return resolve(null);
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latNum}&lon=${lngNum}&addressdetails=1&accept-language=fr`;
+
+    const options = {
+      headers: { 'User-Agent': 'dcim-backend/1.0 (your@email)' }
+    };
+
+    https.get(url, options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const payload = JSON.parse(data);
+          if (!payload || payload.error) return resolve(null);
+          return resolve(payload);
+        } catch (err) {
+          return reject(err);
+        }
+      });
+    }).on('error', (err) => reject(err));
+  });
+}
+
+module.exports = { geocodeAddress, reverseGeocode };

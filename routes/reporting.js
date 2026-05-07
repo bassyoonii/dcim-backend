@@ -104,14 +104,39 @@ router.get('/capacity', async (req, res) => {
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet('Capacity');
       if (rows.length) {
-        sheet.columns = Object.keys(rows[0]).map((key) => ({ header: key, key, width: 22 }));
+        const headers = Object.keys(rows[0]);
+        const widths = headers.map((h) => Math.max(12, Math.min(36, h.length + 6)));
+
+        sheet.columns = headers.map((key, idx) => ({ header: key, key, width: widths[idx] }));
+
+        sheet.getRow(1).font = { bold: true };
+        sheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+
         sheet.addRows(rows);
+
+        sheet.eachRow((row) => {
+          row.eachCell((cell) => {
+            cell.border = {
+              top: { style: 'thin' },
+              left: { style: 'thin' },
+              bottom: { style: 'thin' },
+              right: { style: 'thin' }
+            };
+            if (row.number !== 1) {
+              cell.alignment = { vertical: 'middle', horizontal: 'left' };
+            }
+          });
+        });
       }
 
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', 'attachment; filename="capacity-report.xlsx"');
-      await workbook.xlsx.write(res);
-      return res.end();
+      const buffer = await workbook.xlsx.writeBuffer();
+
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': 'attachment; filename="capacity-report.xlsx"',
+        'Content-Length': buffer.byteLength
+      });
+      return res.end(Buffer.from(buffer));
     }
 
     if (format === 'pdf') {
@@ -127,13 +152,48 @@ router.get('/capacity', async (req, res) => {
 
       const doc = new PDFDocument({ margin: 30, size: 'A4' });
       doc.pipe(res);
-      doc.fontSize(16).text('DCIM Capacity Report', { underline: true });
+      doc.fontSize(16).text('Capacity Report', { underline: true });
       doc.moveDown(0.8);
 
-      rows.forEach((r) => {
-        doc.fontSize(10).text(
-          `${r.datacenterCode} - ${r.datacenterName} | racks:${r.rackCount} | U:${r.occupiedU}/${r.totalU} | storage:${r.storageAllocatedTB}/${r.storageTotalTB}TB | power:${r.currentPowerW}/${r.maxPowerW}W`
-        );
+      const headers = rows.length ? Object.keys(rows[0]) : [];
+      const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      const colCount = Math.max(headers.length, 1);
+      const colWidth = pageWidth / colCount;
+      const rowHeight = 16;
+
+      const drawRow = (values, y, isHeader = false) => {
+        values.forEach((value, idx) => {
+          const x = doc.page.margins.left + idx * colWidth;
+          doc
+            .rect(x, y, colWidth, rowHeight)
+            .stroke('#cbd5f5');
+
+          doc
+            .font(isHeader ? 'Helvetica-Bold' : 'Helvetica')
+            .fontSize(8)
+            .fillColor('#1f2937')
+            .text(String(value ?? ''), x + 3, y + 4, { width: colWidth - 6, height: rowHeight, ellipsis: true });
+        });
+      };
+
+      let y = doc.y;
+      if (headers.length) {
+        drawRow(headers, y, true);
+        y += rowHeight + 4;
+      }
+
+      rows.forEach((row) => {
+        const values = headers.map((h) => row[h]);
+        if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          y = doc.page.margins.top;
+          if (headers.length) {
+            drawRow(headers, y, true);
+            y += rowHeight + 4;
+          }
+        }
+        drawRow(values, y, false);
+        y += rowHeight + 4;
       });
 
       doc.end();

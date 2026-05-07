@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const {
-  getDatacenters, getDatacenter, getDatacenterLocations, geocodeProxy,
+  getDatacenters, getDatacenter, getDatacenterLocations, geocodeProxy, geocodeReverse,
   createDatacenter, updateDatacenter, deleteDatacenter
 } = require('../controllers/datacenterController');
 const { protect } = require('../middleware/auth');
@@ -13,6 +13,9 @@ router.get('/locations', getDatacenterLocations);
 router.get('/geocode', geocodeProxy);
 
 router.use(protect); // other datacenter routes require login
+
+// protected reverse geocode proxy
+router.get('/geocode/reverse', geocodeReverse);
 
 router.get('/', getDatacenters);
 router.get('/:id', getDatacenter);

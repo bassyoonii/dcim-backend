@@ -8,8 +8,8 @@ const { authorize } = require('../middleware/rbac');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/queryHelpers');
 
-// Admin only
-router.use(protect, authorize('admin'));
+// Require authentication for logs (allow any authenticated user)
+router.use(protect);
 
 // GET /api/audit-logs
 router.get('/', async (req, res) => {

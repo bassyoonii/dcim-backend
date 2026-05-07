@@ -3,7 +3,41 @@ const Rack = require('../models/Rack');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { logAction } = require('../utils/auditLog');
 const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/queryHelpers');
-const { geocodeAddress } = require('../utils/geocode');
+const { geocodeAddress, reverseGeocode } = require('../utils/geocode');
+
+const normalizeCoordinates = (coords) => {
+  if (!coords) return null;
+  const lat = Number(coords.lat);
+  const lng = Number(coords.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+};
+
+const extractCoordinates = (location) => {
+  if (!location) return null;
+  const direct = normalizeCoordinates(location.coordinates);
+  if (direct) return direct;
+  if (location.latitude != null || location.longitude != null) {
+    return normalizeCoordinates({ lat: location.latitude, lng: location.longitude });
+  }
+  return null;
+};
+
+const mapMongooseError = (err) => {
+  if (err?.name === 'ValidationError') {
+    const messages = Object.values(err.errors || {}).map((e) => e.message).filter(Boolean);
+    return { status: 400, message: messages.length ? messages.join(', ') : 'Validation failed' };
+  }
+  if (err?.code === 11000) {
+    const fields = Object.keys(err.keyPattern || err.keyValue || {});
+    const field = fields[0] || 'code';
+    return { status: 409, message: `Duplicate ${field}` };
+  }
+  if (err?.name === 'CastError') {
+    return { status: 400, message: `Invalid ${err.path || 'field'}` };
+  }
+  return { status: 500, message: err?.message || 'Internal server error' };
+};
 
 // GET /api/datacenters
 const getDatacenters = async (req, res) => {
@@ -76,8 +110,18 @@ const getDatacenter = async (req, res) => {
 // POST /api/datacenters
 const createDatacenter = async (req, res) => {
   try {
+    if (!req.user?.id) {
+      return errorResponse(res, 'Not authorized, user not found', 401);
+    }
     const body = { ...req.body };
     const location = body.location || {};
+    const normalizedCoords = extractCoordinates(location);
+
+    if ((location.coordinates || location.latitude != null || location.longitude != null) && !normalizedCoords) {
+      return errorResponse(res, 'Invalid coordinates (lat/lng required)', 400);
+    }
+
+    if (normalizedCoords) location.coordinates = normalizedCoords;
 
     if (location.address && (!location.coordinates || !location.coordinates.lat || !location.coordinates.lng)) {
       try {
@@ -98,7 +142,9 @@ const createDatacenter = async (req, res) => {
 
     return successResponse(res, dc, 'Datacenter created', 201);
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    console.error('[datacenters] create error:', err);
+    const mapped = mapMongooseError(err);
+    return errorResponse(res, mapped.message, mapped.status);
   }
 };
 
@@ -107,6 +153,15 @@ const updateDatacenter = async (req, res) => {
   try {
     const updateData = { ...req.body };
     const loc = updateData.location;
+    const normalizedCoords = extractCoordinates(loc);
+
+    if ((loc?.coordinates || loc?.latitude != null || loc?.longitude != null) && !normalizedCoords) {
+      return errorResponse(res, 'Invalid coordinates (lat/lng required)', 400);
+    }
+
+    if (loc && normalizedCoords) {
+      updateData.location = { ...loc, coordinates: normalizedCoords };
+    }
     if (loc && loc.address && (!loc.coordinates || !loc.coordinates.lat || !loc.coordinates.lng)) {
       try {
         const coords = await geocodeAddress([loc.address, loc.city, loc.country].filter(Boolean).join(', '));
@@ -127,7 +182,9 @@ const updateDatacenter = async (req, res) => {
 
     return successResponse(res, dc, 'Datacenter updated');
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    console.error('[datacenters] update error:', err);
+    const mapped = mapMongooseError(err);
+    return errorResponse(res, mapped.message, mapped.status);
   }
 };
 
@@ -207,9 +264,25 @@ const geocodeProxy = async (req, res) => {
   }
 };
 
+// GET /api/datacenters/geocode/reverse?lat=...&lng=... (proxy to backend reverse geocode helper)
+const geocodeReverse = async (req, res) => {
+  try {
+    const lat = req.query.lat;
+    const lng = req.query.lng;
+    if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+      return errorResponse(res, 'Invalid coordinates (lat/lng required)', 400);
+    }
+    const payload = await reverseGeocode(lat, lng);
+    return successResponse(res, payload);
+  } catch (err) {
+    return errorResponse(res, err.message, 500);
+  }
+};
+
 module.exports = {
   getDatacenters, getDatacenter,
   getDatacenterLocations,
   geocodeProxy,
+  geocodeReverse,
   createDatacenter, updateDatacenter, deleteDatacenter
 };

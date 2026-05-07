@@ -51,7 +51,6 @@ app.use(cors({
 app.use(morgan('dev'));
 app.use(express.json());
 
-// Never cache API responses
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Pragma', 'no-cache');
@@ -108,7 +107,9 @@ const startServer = async () => {
   }
 
   try {
+    console.log('[bootstrap] starting supportNotifications job');
     startSupportNotificationJob();
+    console.log('[bootstrap] supportNotifications job initialized');
   } catch (err) {
     console.warn('[bootstrap] supportNotifications failed:', err.message);
   }

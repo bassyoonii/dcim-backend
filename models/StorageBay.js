@@ -34,6 +34,8 @@ const storageBaySchema = new mongoose.Schema({
   },
   allocatedCapacityTB: { type: Number, default: 0, min: 0 },
   supportExpiry: Date,
+  firstNotifiedAt: Date,
+  lastNotifiedAt: Date,
   datacenter: { type: mongoose.Schema.Types.ObjectId, ref: 'Datacenter', index: true },
   rack: { type: mongoose.Schema.Types.ObjectId, ref: 'Rack', index: true },
   uStart: { type: Number, min: 0 },
