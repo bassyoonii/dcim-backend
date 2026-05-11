@@ -8,11 +8,12 @@ const { authorize } = require('../middleware/rbac');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/queryHelpers');
 
-// Admin only
-router.use(protect, authorize('admin'));
+// Require authentication for logs
+router.use(protect);
 
 // GET /api/audit-logs
-router.get('/', async (req, res) => {
+// Restricted to admin (centralized audit logs)
+router.get('/', authorize('admin'), async (req, res) => {
   try {
     const { page, limit, skip } = parsePagination(req.query);
     const { sort } = parseSort(req.query, ['createdAt', 'action', 'entity']);
@@ -44,7 +45,7 @@ router.get('/', async (req, res) => {
     const payload = await buildPaginatedPayload({
       model: AuditLog,
       filter,
-      populate: [{ path: 'user', select: 'name email avatar' }],
+      populate: [{ path: 'user', select: 'name email avatar role' }],
       sort,
       page,
       limit,
@@ -52,6 +53,20 @@ router.get('/', async (req, res) => {
     });
 
     return successResponse(res, payload);
+  } catch (err) {
+    return errorResponse(res, err.message, 500);
+  }
+});
+
+// DELETE /api/audit-logs/:id
+// Restricted to admin
+router.delete('/:id', authorize('admin'), async (req, res) => {
+  try {
+    const deleted = await AuditLog.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return errorResponse(res, 'Audit log not found', 404);
+    }
+    return successResponse(res, { id: deleted._id }, 'Audit log deleted');
   } catch (err) {
     return errorResponse(res, err.message, 500);
   }

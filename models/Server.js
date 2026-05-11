@@ -50,6 +50,8 @@ const serverSchema = new mongoose.Schema({
   },
   serialNumber: String,
   supportExpiry: Date,
+  firstNotifiedAt: Date,
+  lastNotifiedAt: Date,
   // Physical location
   datacenter: { type: mongoose.Schema.Types.ObjectId, ref: 'Datacenter' },
   rack: { type: mongoose.Schema.Types.ObjectId, ref: 'Rack' },

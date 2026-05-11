@@ -38,6 +38,8 @@ const firewallSchema = new mongoose.Schema({
     expiry: { type: Date }
   },
   supportExpiry: { type: Date },
+  firstNotifiedAt: Date,
+  lastNotifiedAt: Date,
   // Physical location
   datacenter: { type: mongoose.Schema.Types.ObjectId, ref: 'Datacenter', index: true },
   rack: { type: mongoose.Schema.Types.ObjectId, ref: 'Rack', index: true },

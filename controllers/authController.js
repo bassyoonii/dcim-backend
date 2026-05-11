@@ -215,12 +215,21 @@ const changePassword = async (req, res) => {
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body || {};
-    if (!email) return errorResponse(res, 'Email is required', 400);
+    const rawEmail = String(email || '');
+    const normalizedEmail = rawEmail.trim().toLowerCase();
 
-    const user = await User.findOne({ email: String(email).toLowerCase().trim() }).select('+resetPasswordToken +resetPasswordExpires');
+    console.log('[forgot-password] Email reçu:', rawEmail);
+    console.log('[forgot-password] Email normalisé:', normalizedEmail);
+
+    if (!normalizedEmail) return errorResponse(res, 'Email is required', 400);
+
+    const user = await User.findOne({ email: normalizedEmail })
+      .select('+resetPasswordToken +resetPasswordExpires');
+    console.log('[forgot-password] User trouvé:', user ? { id: user._id, email: user.email, isActive: user.isActive } : null);
 
     // Always return success to avoid user enumeration.
     if (!user || !user.isActive) {
+      console.log('[forgot-password] Abandon: user absent ou inactif');
       return successResponse(res, null, 'If the email exists, a reset link has been sent');
     }
 
@@ -245,13 +254,28 @@ const forgotPassword = async (req, res) => {
     ].join('\n');
 
     try {
-      await sendMail({ to: user.email, subject, text });
+      console.log('[forgot-password] sendMail() start');
+      console.log('[forgot-password] Tentative d\'envoi à:', user.email);
+      const mailResult = await sendMail({ to: user.email, subject, text });
+
+      if (!mailResult.delivered) {
+        console.error('[forgot-password] ÉCHEC envoi email:', mailResult.error);
+        // Cleanup token so we don't leave a reset token that the user never received.
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpires = undefined;
+        await user.save({ validateBeforeSave: false });
+
+        // Still avoid enumeration; but surface a generic operational error.
+        return errorResponse(res, 'Unable to send reset email', 500);
+      }
+
+      console.log('[forgot-password] ✅ Email envoyé avec succès à:', user.email, 'MessageId:', mailResult.messageId);
     } catch (mailErr) {
+      console.error('[forgot-password] EXCEPTION lors de l\'envoi:', mailErr.message);
       // Cleanup token so we don't leave a reset token that the user never received.
       user.resetPasswordToken = undefined;
       user.resetPasswordExpires = undefined;
       await user.save({ validateBeforeSave: false });
-      console.error('[forgot-password] mail error:', mailErr.message);
 
       // Still avoid enumeration; but surface a generic operational error.
       return errorResponse(res, 'Unable to send reset email', 500);
