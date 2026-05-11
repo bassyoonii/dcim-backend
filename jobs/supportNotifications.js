@@ -65,14 +65,6 @@ const buildAssetRows = async () => {
     Firewall.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt notes').lean(),
   ]);
 
-<<<<<<< HEAD
-  const toRows = (kind, items) =>
-    items.map((x) => ({
-      assetType: kind,
-      assetId: x._id,
-      name: x.name,
-      supportExpiry: x.supportExpiry,
-=======
   const toRows = (kind, model, items) =>
     items.map((x) => ({
       assetType: kind,
@@ -83,7 +75,6 @@ const buildAssetRows = async () => {
       firstNotifiedAt: x.firstNotifiedAt,
       lastNotifiedAt: x.lastNotifiedAt,
       notes: x.notes
->>>>>>> edbdf17b15f82b25a371ca1f2a746bb86e24b4b5
     }));
 
   return [
@@ -95,31 +86,28 @@ const buildAssetRows = async () => {
   ];
 };
 
-<<<<<<< HEAD
-const ensureNotificationRow = async ({ assetType, assetId, supportExpiry }) => {
-  const existing = await SupportNotification.findOne({ assetType, assetId }).lean();
-
-  if (!existing) {
-    return SupportNotification.create({ assetType, assetId, supportExpiry });
-  }
-
-  if (!isSameDay(new Date(existing.supportExpiry), new Date(supportExpiry))) {
-    return SupportNotification.findOneAndUpdate(
-      { assetType, assetId },
-      {
-        $set: { supportExpiry, lastError: '' },
-        $unset: { firstAlertSentAt: 1, lastReminderSentAt: 1 },
-      },
-      { new: true }
-    );
-  }
-
-  return existing;
-};
-
-const sendSupportAlert = async ({ kind, name, supportExpiry, to }) => {
 const sendSupportAlert = async ({ kind, name, supportExpiry, notes, to }) => {
-const skipEmail = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_SKIP_EMAIL || '').toLowerCase());
+  const skipEmail = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_SKIP_EMAIL || '').toLowerCase());
+  if (skipEmail) {
+    console.log(`[supportNotifications] SUPPORT_ALERT_SKIP_EMAIL enabled; skipping email for ${kind} ${name}`);
+    return { delivered: true, skipped: true };
+  }
+  const subject = `[DCIM] Support expire bientôt: ${kind} ${name}`;
+  const note = formatNotes(notes);
+  const text = [
+    `Support expirera le: ${formatDate(supportExpiry)}`,
+    `Équipement: ${kind} / ${name}`,
+    ...(note ? [`Remarque: ${note}`] : [])
+  ].join('\n');
+
+  const result = await sendMail({ to, subject, text });
+  if (!result.delivered) {
+    console.error(`[supportNotifications] Failed to send alert for ${kind} ${name}:`, result.error);
+    return result;
+  }
+
+const sendSupportAlert = async ({ kind, name, supportExpiry, notes, to }) => {
+  const skipEmail = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_SKIP_EMAIL || '').toLowerCase());
   if (skipEmail) {
     console.log(`[supportNotifications] SUPPORT_ALERT_SKIP_EMAIL enabled; skipping email for ${kind} ${name}`);
     return { delivered: true, skipped: true };
@@ -198,6 +186,12 @@ const createInAppAlert = async ({ userIds, kind, assetId, name, supportExpiry })
   }
 };
 
+const isEnabled = () => ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_NOTIFICATIONS_ENABLED || '').toLowerCase());
+
+const isSameDay = (a, b) => a.toDateString() === b.toDateString();
+
+const startOfDay = (d) => { const dd = new Date(d); dd.setHours(0,0,0,0); return dd; };
+
 const getAlertDate = (supportExpiry) => {
   // Mode test rapide: si TEST_SUPPORT_MINUTES_BEFORE est défini,
   // on envoie l'alerte X minutes avant supportExpiry.
@@ -222,8 +216,6 @@ const runOnce = async () => {
   if (!recipients.length) {
     console.warn('[supportNotifications] No recipients configured');
     return { enabled: true, delivered: false, reason: 'no-recipients' };
-
-    return { delivered: false, reason: 'no-recipients' };
   }
 
   const inAppRecipients = await buildInAppRecipients(recipients);
@@ -236,86 +228,11 @@ const runOnce = async () => {
 
   const now = new Date();
   const isMonday = now.getDay() === 1;
-  const assets = await buildAssetRows();
   const weekStart = startOfWeekMonday(now);
-
-  console.log(`[supportNotifications] Found ${assets.length} asset(s) with supportExpiry`);
 
   let sent = 0;
 
   for (const asset of assets) {
-    const supportExpiry = new Date(asset.supportExpiry);
-    const alertDate = getAlertDate(supportExpiry);
-
-    console.log(
-      `[supportNotifications] Checking ${asset.assetType} "${asset.name}" | expiry=${formatDate(
-        supportExpiry
-      )} | alertDate=${alertDate.toISOString()}`
-    );
-
-    const notif = await ensureNotificationRow(asset);
-
-    if (!notif.firstAlertSentAt && now.getTime() >= alertDate.getTime()) {
-      try {
-        await sendSupportAlert({
-          kind: asset.assetType,
-          name: asset.name,
-          supportExpiry,
-          to: recipients,
-        });
-
-        await SupportNotification.updateOne(
-          { assetType: asset.assetType, assetId: asset.assetId },
-          { $set: { firstAlertSentAt: new Date(), lastError: '' } }
-        );
-
-        sent += 1;
-        console.log(`[supportNotifications] First alert sent for ${asset.assetType} "${asset.name}"`);
-      } catch (err) {
-        await SupportNotification.updateOne(
-          { assetType: asset.assetType, assetId: asset.assetId },
-          { $set: { lastError: String(err?.message || err) } }
-        );
-        console.warn(
-          `[supportNotifications] Failed first alert for ${asset.assetType} "${asset.name}":`,
-          err.message
-        );
-      }
-      continue;
-    }
-
-    const pastAlertWindow = now.getTime() >= alertDate.getTime();
-
-    if (isMonday && pastAlertWindow && notif.firstAlertSentAt) {
-      const last = notif.lastReminderSentAt ? new Date(notif.lastReminderSentAt) : null;
-      const alreadyToday = last ? isSameDay(startOfDay(last), startOfDay(now)) : false;
-
-      if (!alreadyToday) {
-        try {
-          await sendSupportReminder({
-            kind: asset.assetType,
-            name: asset.name,
-            supportExpiry,
-            to: recipients,
-          });
-
-          await SupportNotification.updateOne(
-            { assetType: asset.assetType, assetId: asset.assetId },
-            { $set: { lastReminderSentAt: new Date(), lastError: '' } }
-          );
-
-          sent += 1;
-          console.log(`[supportNotifications] Reminder sent for ${asset.assetType} "${asset.name}"`);
-        } catch (err) {
-          await SupportNotification.updateOne(
-            { assetType: asset.assetType, assetId: asset.assetId },
-            { $set: { lastError: String(err?.message || err) } }
-          );
-          console.warn(
-            `[supportNotifications] Failed reminder for ${asset.assetType} "${asset.name}":`,
-            err.message
-          );
-        }
     const shouldSendFirst = !asset.firstNotifiedAt;
     const shouldSendReminder = Boolean(asset.firstNotifiedAt) &&
       isMonday &&
@@ -372,7 +289,6 @@ const startSupportNotificationJob = () => {
     return null;
   }
 
-  const schedule = process.env.SUPPORT_NOTIFICATIONS_CRON || '0 9 * * *';
   const schedule = String(process.env.SUPPORT_ALERT_CRON || '0 9 * * 1').trim();
   const isValid = cron.validate(schedule);
   console.log('[supportNotifications] Cron valid:', isValid);
@@ -403,3 +319,4 @@ const startSupportNotificationJob = () => {
 };
 
 module.exports = { startSupportNotificationJob, runOnce };
+}
