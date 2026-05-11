@@ -1,4 +1,5 @@
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -7,6 +8,7 @@ const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const ensureDefaultAdmin = require('./utils/ensureDefaultAdmin');
 const { startSupportNotificationJob } = require('./jobs/supportNotifications');
+const { initSocket } = require('./socket');
 dotenv.config({ path: './.env' });
 
 const app = express();
@@ -71,6 +73,7 @@ app.use(
 app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/users',       require('./routes/users'));
 app.use('/api/audit-logs',  require('./routes/auditLogs'));
+app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/datacenters', require('./routes/datacenters'));
 app.use('/api/racks',       require('./routes/racks'));
 app.use('/api/servers',     require('./routes/servers'));
@@ -114,7 +117,16 @@ const startServer = async () => {
     console.warn('[bootstrap] supportNotifications failed:', err.message);
   }
 
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  const server = http.createServer(app);
+
+  try {
+    initSocket(server, { corsOrigins: allowedOrigins });
+    console.log('[bootstrap] Socket.IO initialized');
+  } catch (err) {
+    console.warn('[bootstrap] Socket.IO init failed:', err.message);
+  }
+
+  server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 };
 
 startServer();

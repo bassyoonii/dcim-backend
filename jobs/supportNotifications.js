@@ -6,6 +6,9 @@ const DataDomain = require('../models/DataDomain');
 const Switch = require('../models/Switch');
 const Firewall = require('../models/Firewall');
 const { sendMail } = require('../utils/mailer');
+const User = require('../models/User');
+const Notification = require('../models/Notification');
+const { getIO } = require('../socket');
 
 const parseToList = (value) =>
   String(value || '')
@@ -34,16 +37,32 @@ const addMonths = (date, months) => {
   return d;
 };
 
+const startOfWeekMonday = (value) => {
+  const d = new Date(value);
+  const day = d.getDay(); // 0=Sun..6=Sat
+  const daysSinceMonday = (day + 6) % 7;
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - daysSinceMonday);
+  return d;
+};
+
+const formatNotes = (value) => {
+  const s = String(value || '').trim();
+  if (!s) return null;
+  const max = 300;
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
 const buildAssetRows = async () => {
   const threshold = addMonths(new Date(), 4);
   const query = { supportExpiry: { $ne: null, $lte: threshold } };
 
   const [servers, storage, dataDomains, switches, firewalls] = await Promise.all([
-    Server.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt').lean(),
-    StorageBay.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt').lean(),
-    DataDomain.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt').lean(),
-    Switch.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt').lean(),
-    Firewall.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt').lean(),
+    Server.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt notes').lean(),
+    StorageBay.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt notes').lean(),
+    DataDomain.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt notes').lean(),
+    Switch.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt notes').lean(),
+    Firewall.find(query).select('name supportExpiry firstNotifiedAt lastNotifiedAt notes').lean(),
   ]);
 
   const toRows = (kind, model, items) =>
@@ -54,7 +73,8 @@ const buildAssetRows = async () => {
       name: x.name,
       supportExpiry: x.supportExpiry,
       firstNotifiedAt: x.firstNotifiedAt,
-      lastNotifiedAt: x.lastNotifiedAt
+      lastNotifiedAt: x.lastNotifiedAt,
+      notes: x.notes
     }));
 
   return [
@@ -66,9 +86,20 @@ const buildAssetRows = async () => {
   ];
 };
 
-const sendSupportAlert = async ({ kind, name, supportExpiry, to }) => {
+const sendSupportAlert = async ({ kind, name, supportExpiry, notes, to }) => {
+  const skipEmail = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_SKIP_EMAIL || '').toLowerCase());
+  if (skipEmail) {
+    console.log(`[supportNotifications] SUPPORT_ALERT_SKIP_EMAIL enabled; skipping email for ${kind} ${name}`);
+    return { delivered: true, skipped: true };
+  }
+
   const subject = `[DCIM] Support expire bientôt: ${kind} ${name}`;
-  const text = [`Support expirera le: ${formatDate(supportExpiry)}`, `Équipement: ${kind} / ${name}`].join('\n');
+  const note = formatNotes(notes);
+  const text = [
+    `Support expirera le: ${formatDate(supportExpiry)}`,
+    `Équipement: ${kind} / ${name}`,
+    ...(note ? [`Remarque: ${note}`] : [])
+  ].join('\n');
 
   const result = await sendMail({ to, subject, text });
   if (!result.delivered) {
@@ -80,25 +111,90 @@ const sendSupportAlert = async ({ kind, name, supportExpiry, to }) => {
   return result;
 };
 
+const buildInAppRecipients = async (emails) => {
+  const sendToAll = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_INAPP_ALL || '').toLowerCase());
+  if (sendToAll) {
+    const users = await User.find({ isActive: true }).select('_id').lean();
+    console.log(`[supportNotifications] In-app recipients mode=ALL (${users.length})`);
+    return users.map((u) => u._id);
+  }
+
+  const list = Array.isArray(emails) ? emails : [];
+  const normalized = list.map((x) => String(x || '').trim().toLowerCase()).filter(Boolean);
+  if (!normalized.length) return [];
+
+  const users = await User.find({
+    isActive: true,
+    email: { $in: normalized }
+  })
+    .select('_id email')
+    .lean();
+
+  return users.map((u) => u._id);
+};
+
+const createInAppAlert = async ({ userIds, kind, assetId, name, supportExpiry }) => {
+  if (!userIds || userIds.length === 0) return;
+
+  const docs = userIds.map((uid) => ({
+    recipient: uid,
+    actor: null,
+    actorName: 'Système',
+    action: 'ALERT',
+    entity: kind,
+    entityId: assetId,
+    entityLabel: `${name} (expire: ${formatDate(supportExpiry)})`,
+    readAt: null
+  }));
+
+  const inserted = await Notification.insertMany(docs, { ordered: false });
+
+  const io = getIO();
+  if (io) {
+    for (const n of inserted) {
+      io.to(`user:${n.recipient.toString()}`).emit('notification:new', {
+        _id: n._id,
+        actor: null,
+        actorName: n.actorName || 'Système',
+        action: n.action,
+        entity: n.entity,
+        entityId: n.entityId,
+        entityLabel: n.entityLabel,
+        readAt: n.readAt,
+        createdAt: n.createdAt
+      });
+    }
+  }
+};
+
 const runOnce = async () => {
+  const forceInApp = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_FORCE_INAPP || '').toLowerCase());
+
   const recipients = getRecipients();
   if (!recipients.length) {
     console.warn('[supportNotifications] No recipients configured');
     return { delivered: false, reason: 'no-recipients' };
   }
 
+  const inAppRecipients = await buildInAppRecipients(recipients);
+  if (!inAppRecipients.length) {
+    console.warn('[supportNotifications] No in-app recipients matched SUPPORT_ALERT_TO/DEFAULT_ADMIN_EMAIL');
+  }
+
   const assets = await buildAssetRows();
   console.log(`[supportNotifications] Found ${assets.length} asset(s) with supportExpiry`);
 
   const now = new Date();
-  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const isMonday = now.getDay() === 1;
+  const weekStart = startOfWeekMonday(now);
 
   let sent = 0;
 
   for (const asset of assets) {
     const shouldSendFirst = !asset.firstNotifiedAt;
     const shouldSendReminder = Boolean(asset.firstNotifiedAt) &&
-      (!asset.lastNotifiedAt || asset.lastNotifiedAt <= weekAgo);
+      isMonday &&
+      (!asset.lastNotifiedAt || new Date(asset.lastNotifiedAt) < weekStart);
 
     if (!shouldSendFirst && !shouldSendReminder) {
       continue;
@@ -108,10 +204,13 @@ const runOnce = async () => {
       kind: asset.assetType,
       name: asset.name,
       supportExpiry: asset.supportExpiry,
+      notes: asset.notes,
       to: recipients,
     });
 
-    if (result.delivered) {
+    const treatAsDelivered = Boolean(result && result.delivered) || forceInApp;
+
+    if (treatAsDelivered) {
       const nextUpdate = {
         lastNotifiedAt: now
       };
@@ -119,6 +218,18 @@ const runOnce = async () => {
         nextUpdate.firstNotifiedAt = now;
       }
       await asset.model.updateOne({ _id: asset.id }, { $set: nextUpdate });
+
+      try {
+        await createInAppAlert({
+          userIds: inAppRecipients,
+          kind: asset.assetType,
+          assetId: asset.id,
+          name: asset.name,
+          supportExpiry: asset.supportExpiry
+        });
+      } catch (err) {
+        console.warn('[supportNotifications] In-app notification failed:', err.message);
+      }
 
       sent += 1;
       console.log(`[supportNotifications] Alert sent for ${asset.assetType} "${asset.name}"`);
@@ -131,7 +242,7 @@ const runOnce = async () => {
 };
 
 const startSupportNotificationJob = () => {
-  const schedule = '0 9 * * 1';
+  const schedule = String(process.env.SUPPORT_ALERT_CRON || '0 9 * * 1').trim();
   const isValid = cron.validate(schedule);
   console.log('[supportNotifications] Cron valid:', isValid);
   if (!isValid) throw new Error('Invalid cron schedule');

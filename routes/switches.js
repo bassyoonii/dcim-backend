@@ -5,6 +5,7 @@ const NetworkPort = require('../models/NetworkPort');
 const { protect } = require('../middleware/auth');
 const { authorize } = require('../middleware/rbac');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
+const { logAction } = require('../utils/auditLog');
 const { normalizeObjectId } = require('../utils/normalizeRefs');
 const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/queryHelpers');
 
@@ -244,6 +245,8 @@ router.post('/', authorize('admin', 'net_operator'), async (req, res) => {
     };
     const sw = await Switch.create(payload);
 
+    await logAction(req.user.id, 'CREATE', 'Switch', sw._id, req.body, req.ip);
+
     // Auto-generate ports for the switch (Port 1..N)
     const totalPorts = Math.max(1, Number(sw.totalPorts || 0));
     const ports = Array.from({ length: totalPorts }, (_, idx) => {
@@ -286,6 +289,8 @@ router.put('/:id', authorize('admin', 'net_operator'), async (req, res) => {
     );
 
     if (!sw) return errorResponse(res, 'Switch not found', 404);
+
+    await logAction(req.user.id, 'UPDATE', 'Switch', sw._id, req.body, req.ip);
 
     // Best-effort: if totalPorts increased, ensure the missing NetworkPorts exist.
     const totalPorts = Math.max(1, Number(sw.totalPorts || 0));
@@ -336,6 +341,8 @@ router.delete('/:id', authorize('admin', 'net_operator'), async (req, res) => {
   try {
     const sw = await Switch.findByIdAndDelete(req.params.id);
     if (!sw) return errorResponse(res, 'Switch not found', 404);
+
+    await logAction(req.user.id, 'DELETE', 'Switch', sw._id, {}, req.ip);
 
     // Cleanup related ports (avoid orphans)
     await NetworkPort.deleteMany({ switch: sw._id });
