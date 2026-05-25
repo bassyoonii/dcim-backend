@@ -106,26 +106,6 @@ const sendSupportAlert = async ({ kind, name, supportExpiry, notes, to }) => {
     return result;
   }
 
-const sendSupportAlert = async ({ kind, name, supportExpiry, notes, to }) => {
-  const skipEmail = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_SKIP_EMAIL || '').toLowerCase());
-  if (skipEmail) {
-    console.log(`[supportNotifications] SUPPORT_ALERT_SKIP_EMAIL enabled; skipping email for ${kind} ${name}`);
-    return { delivered: true, skipped: true };
-  }
-  const subject = `[DCIM] Support expire bientôt: ${kind} ${name}`;
-  const note = formatNotes(notes);
-  const text = [
-    `Support expirera le: ${formatDate(supportExpiry)}`,
-    `Équipement: ${kind} / ${name}`,
-    ...(note ? [`Remarque: ${note}`] : [])
-  ].join('\n');
-
-  const result = await sendMail({ to, subject, text });
-  if (!result.delivered) {
-    console.error(`[supportNotifications] Failed to send alert for ${kind} ${name}:`, result.error);
-    return result;
-  }
-
   console.log(`[supportNotifications] Alert sent for ${kind} ${name} to ${to}`);
   return result;
 };
@@ -319,4 +299,3 @@ const startSupportNotificationJob = () => {
 };
 
 module.exports = { startSupportNotificationJob, runOnce };
-}
