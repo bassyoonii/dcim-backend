@@ -32,12 +32,33 @@ router.get('/:id', async (req, res) => {
 // PUT update user role or status
 router.put('/:id', async (req, res) => {
   try {
-    const { role, isActive, name } = req.body;
+    const { role, isActive, name, email } = req.body;
+    console.log('[users] update body', { id: req.params.id, role, isActive, name, email });
+
+    const updates = {
+      ...(typeof role !== 'undefined' ? { role } : {}),
+      ...(typeof isActive !== 'undefined' ? { isActive } : {}),
+      ...(typeof name !== 'undefined' ? { name } : {}),
+      ...(typeof email !== 'undefined' ? { email } : {}),
+    };
+
+    if (Object.keys(updates).length === 0) {
+      return errorResponse(res, 'No fields to update', 400);
+    }
+
+    if (typeof email !== 'undefined') {
+      const existing = await User.findOne({ email, _id: { $ne: req.params.id } });
+      if (existing) {
+        return errorResponse(res, 'Email already in use', 409);
+      }
+    }
+
     const user = await User.findByIdAndUpdate(
       req.params.id,
-      { role, isActive, name },
-      { new: true, runValidators: true }
+      { $set: updates },
+      { new: true, runValidators: true, context: 'query' }
     ).select('-password');
+
     if (!user) return errorResponse(res, 'User not found', 404);
     return successResponse(res, user, 'User updated');
   } catch (err) {

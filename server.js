@@ -1,4 +1,5 @@
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
@@ -7,8 +8,8 @@ const dotenv = require('dotenv');
 const connectDB = require('./config/db');
 const ensureDefaultAdmin = require('./utils/ensureDefaultAdmin');
 const { startSupportNotificationJob } = require('./jobs/supportNotifications');
-
-dotenv.config();
+const { initSocket } = require('./socket');
+dotenv.config({ path: './.env' });
 
 const app = express();
 
@@ -52,7 +53,6 @@ app.use(cors({
 app.use(morgan('dev'));
 app.use(express.json());
 
-// Never cache API responses
 app.use('/api', (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Pragma', 'no-cache');
@@ -73,6 +73,7 @@ app.use(
 app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/users',       require('./routes/users'));
 app.use('/api/audit-logs',  require('./routes/auditLogs'));
+app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/datacenters', require('./routes/datacenters'));
 app.use('/api/racks',       require('./routes/racks'));
 app.use('/api/servers',     require('./routes/servers'));
@@ -87,6 +88,10 @@ app.use('/api/firewalls',    require('./routes/firewalls'));
 app.use('/api/reporting',    require('./routes/reporting'));
 app.use('/api/search',       require('./routes/search'));
 app.use('/api/dashboard',    require('./routes/dashboard'));
+app.use('/api/prometheus',   require('./routes/prometheus'));
+
+// quick check route to verify prometheus proxy is reachable
+app.get('/api/prometheus/check', (req, res) => res.json({ success: true, message: 'prometheus proxy registered' }));
 
 app.use((err, req, res, next) => {
   console.error(err.stack);
@@ -105,12 +110,23 @@ const startServer = async () => {
   }
 
   try {
+    console.log('[bootstrap] starting supportNotifications job');
     startSupportNotificationJob();
+    console.log('[bootstrap] supportNotifications job initialized');
   } catch (err) {
     console.warn('[bootstrap] supportNotifications failed:', err.message);
   }
 
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  const server = http.createServer(app);
+
+  try {
+    initSocket(server, { corsOrigins: allowedOrigins });
+    console.log('[bootstrap] Socket.IO initialized');
+  } catch (err) {
+    console.warn('[bootstrap] Socket.IO init failed:', err.message);
+  }
+
+  server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 };
 
 startServer();

@@ -10,6 +10,8 @@ const dataDomainSchema = new mongoose.Schema({
   usedCapacityTB: { type: Number, default: 0, min: 0 },
   type: { type: String, enum: ['Backup', 'Archive'], default: 'Backup' },
   supportExpiry: Date,
+  firstNotifiedAt: Date,
+  lastNotifiedAt: Date,
   datacenter: { type: mongoose.Schema.Types.ObjectId, ref: 'Datacenter', index: true },
   rack: { type: mongoose.Schema.Types.ObjectId, ref: 'Rack', index: true },
   uStart: { type: Number, min: 0 },
