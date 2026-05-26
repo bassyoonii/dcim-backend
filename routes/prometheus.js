@@ -61,4 +61,45 @@ router.get('/disk', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/prometheus/active-vms
+ * Returns array of active VMs discovered via Prometheus `up{job="vm-servers"}`
+ * Response:
+ * {
+ *   vms: [ { ip: "192.168.139.128", instance: "192.168.139.128:9100" } ]
+ * }
+ */
+router.get('/active-vms', async (req, res) => {
+  try {
+    const query = 'up{job="vm-servers"}';
+    const base = PROM_URL.replace(/\/+$/g, '');
+    const url = `${base}/api/v1/query`;
+
+    const response = await axios.get(url, {
+      params: { query },
+      timeout: 5000,
+    });
+
+    const results = response.data?.data?.result || [];
+
+    const vms = results
+      .filter((metric) => {
+        const value = metric.value?.[1];
+        return value === '1' || value === 1;
+      })
+      .map((metric) => {
+        const instance = metric.metric?.instance;
+        const ip = instance ? instance.split(':')[0] : null;
+        return instance ? { ip, instance } : null;
+      })
+      .filter(Boolean);
+
+    return res.json({ success: true, vms });
+  } catch (err) {
+    console.error('[prometheus/active-vms] Error:', err.message || err);
+    // On error, return empty list as required
+    return res.status(503).json({ success: false, message: 'Prometheus is unreachable', vms: [] });
+  }
+});
+
 module.exports = router;

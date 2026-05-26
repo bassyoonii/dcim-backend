@@ -12,8 +12,8 @@ const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/
 router.use(protect);
 
 // GET /api/audit-logs
-// Restricted to admin (centralized audit logs)
-router.get('/', authorize('admin'), async (req, res) => {
+// Restricted to admin (full access), sys_operator (system logs only), net_operator (network logs only)
+router.get('/', authorize('admin', 'sys_operator', 'net_operator'), async (req, res) => {
   try {
     const { page, limit, skip } = parsePagination(req.query);
     const { sort } = parseSort(req.query, ['createdAt', 'action', 'entity']);
@@ -41,6 +41,18 @@ router.get('/', authorize('admin'), async (req, res) => {
         filter.user = { $in: ids };
       }
     }
+
+    // Apply role-based entity filtering
+    if (req.user.role === 'sys_operator') {
+      // System Operator: can view system-related logs (servers, storage, data domains, etc.)
+      const systemEntities = ['Server', 'StorageBay', 'DataDomain', 'Rack'];
+      filter.entity = { $in: systemEntities };
+    } else if (req.user.role === 'net_operator') {
+      // Network Operator: can view network-related logs only
+      const networkEntities = ['Switch', 'Firewall', 'Vlan', 'NetworkPort', 'Cable'];
+      filter.entity = { $in: networkEntities };
+    }
+    // Admin (req.user.role === 'admin') has no entity restriction, sees all logs
 
     const payload = await buildPaginatedPayload({
       model: AuditLog,

@@ -63,9 +63,7 @@ const getCapacityStats = async (req, res) => {
             _id: '$datacenter',
             totalRacks: { $sum: 1 },
             totalU: { $sum: '$totalU' },
-            occupiedU: { $sum: '$occupiedU' },
-            maxPowerW: { $sum: '$maxPowerConsumption' },
-            currentPowerW: { $sum: '$currentPowerConsumption' }
+            occupiedU: { $sum: '$occupiedU' }
           }
         },
         {
@@ -89,9 +87,7 @@ const getCapacityStats = async (req, res) => {
             freeU: { $max: [{ $subtract: ['$totalU', '$occupiedU'] }, 0] },
             occupancyPct: {
               $cond: [{ $gt: ['$totalU', 0] }, { $multiply: [{ $divide: ['$occupiedU', '$totalU'] }, 100] }, 0]
-            },
-            maxPowerW: 1,
-            currentPowerW: 1
+            }
           }
         },
         { $sort: { datacenterCode: 1, datacenterName: 1 } }

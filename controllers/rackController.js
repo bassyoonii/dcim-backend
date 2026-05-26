@@ -342,13 +342,6 @@ const loadRackTopology = async (rack) => {
       occupancyPct: rack.totalU ? Number(((occupiedU / rack.totalU) * 100).toFixed(2)) : 0,
       usedSlots: Array.from(usedUSet).sort((a, b) => a - b),
     },
-    power: {
-      maxW: rack.maxPowerConsumption || 0,
-      currentW: rack.currentPowerConsumption || 0,
-      utilizationPct: rack.maxPowerConsumption
-        ? Number((((rack.currentPowerConsumption || 0) / rack.maxPowerConsumption) * 100).toFixed(2))
-        : 0,
-    },
     portsSummary: {
       total: totalPorts,
       used: usedPorts,
@@ -382,7 +375,6 @@ const getRackOccupancy = async (req, res) => {
         datacenter: rack.datacenter,
       },
       occupancy: topology.occupancy,
-      power: topology.power,
       ports: topology.portsSummary,
     });
   } catch (err) {

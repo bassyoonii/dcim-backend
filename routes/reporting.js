@@ -34,7 +34,7 @@ const toCsv = (rows) => {
 const buildCapacityRows = async () => {
   const [datacenters, racks, storage, dataDomains] = await Promise.all([
     Datacenter.find().select('name code').lean(),
-    Rack.find().select('datacenter totalU occupiedU maxPowerConsumption currentPowerConsumption').lean(),
+    Rack.find().select('datacenter totalU occupiedU').lean(),
     StorageBay.find().select('datacenter totalCapacityTB allocatedCapacityTB').lean(),
     DataDomain.find().select('datacenter totalCapacityTB usedCapacityTB').lean(),
   ]);
@@ -53,9 +53,6 @@ const buildCapacityRows = async () => {
     const ddTotalTB = dcDataDomains.reduce((sum, d) => sum + (d.totalCapacityTB || 0), 0);
     const ddUsedTB = dcDataDomains.reduce((sum, d) => sum + (d.usedCapacityTB || 0), 0);
 
-    const maxPowerW = dcRacks.reduce((sum, r) => sum + (r.maxPowerConsumption || 0), 0);
-    const currentPowerW = dcRacks.reduce((sum, r) => sum + (r.currentPowerConsumption || 0), 0);
-
     return {
       datacenterCode: dc.code || '',
       datacenterName: dc.name || '',
@@ -70,9 +67,6 @@ const buildCapacityRows = async () => {
       dataDomainTotalTB: ddTotalTB,
       dataDomainUsedTB: ddUsedTB,
       dataDomainFreeTB: Math.max(ddTotalTB - ddUsedTB, 0),
-      maxPowerW,
-      currentPowerW,
-      powerPct: maxPowerW ? ((currentPowerW / maxPowerW) * 100).toFixed(2) : '0.00',
     };
   });
 };
@@ -213,8 +207,8 @@ router.get('/energy', async (req, res) => {
         $group: {
           _id: '$datacenter',
           rackCount: { $sum: 1 },
-          maxPowerW: { $sum: '$maxPowerConsumption' },
-          currentPowerW: { $sum: '$currentPowerConsumption' }
+          totalU: { $sum: '$totalU' },
+          occupiedU: { $sum: '$occupiedU' }
         }
       },
       {
@@ -233,11 +227,11 @@ router.get('/energy', async (req, res) => {
           datacenterCode: '$datacenter.code',
           datacenterName: '$datacenter.name',
           rackCount: 1,
-          maxPowerW: 1,
-          currentPowerW: 1,
-          freePowerW: { $max: [{ $subtract: ['$maxPowerW', '$currentPowerW'] }, 0] },
-          utilizationPct: {
-            $cond: [{ $gt: ['$maxPowerW', 0] }, { $multiply: [{ $divide: ['$currentPowerW', '$maxPowerW'] }, 100] }, 0]
+          totalU: 1,
+          occupiedU: 1,
+          freeU: { $max: [{ $subtract: ['$totalU', '$occupiedU'] }, 0] },
+          occupancyPct: {
+            $cond: [{ $gt: ['$totalU', 0] }, { $multiply: [{ $divide: ['$occupiedU', '$totalU'] }, 100] }, 0]
           }
         }
       },

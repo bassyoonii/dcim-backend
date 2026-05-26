@@ -9,7 +9,32 @@ const connectDB = require('./config/db');
 const ensureDefaultAdmin = require('./utils/ensureDefaultAdmin');
 const { startSupportNotificationJob } = require('./jobs/supportNotifications');
 const { initSocket } = require('./socket');
+const { startPeriodicDiscovery } = require('./utils/vmDiscovery');
+const fs = require('fs');
+const axios = require('axios');
 dotenv.config({ path: './.env' });
+
+const PROM_URL = process.env.PROMETHEUS_URL || process.env.PROM_URL || 'http://192.168.139.128:9090';
+
+async function fetchActiveInstancesFromPrometheus() {
+  const query = 'up{job="vm-servers"} == 1';
+  const url = `${PROM_URL.replace(/\/+$/g, '')}/api/v1/query`;
+
+  const response = await axios.get(url, {
+    params: { query },
+    timeout: 5000,
+  });
+
+  const results = response.data?.data?.result || [];
+
+  return results
+    .filter((metric) => {
+      const value = metric.value?.[1];
+      return value === '1' || value === 1;
+    })
+    .map((metric) => metric.metric?.instance)
+    .filter(Boolean);
+}
 
 const app = express();
 
@@ -89,6 +114,18 @@ app.use('/api/reporting',    require('./routes/reporting'));
 app.use('/api/search',       require('./routes/search'));
 app.use('/api/dashboard',    require('./routes/dashboard'));
 app.use('/api/prometheus',   require('./routes/prometheus'));
+app.use('/api/vm-discovery', require('./routes/vmDiscovery'));
+app.use('/api/vms',          require('./routes/vms'));
+
+app.get(['/api/instances', '/instances'], async (req, res) => {
+  try {
+    const instances = await fetchActiveInstancesFromPrometheus();
+    return res.json({ success: true, instances, count: instances.length });
+  } catch (err) {
+    console.error('[api/instances] Error:', err.message || err);
+    return res.status(503).json({ success: false, message: 'Prometheus is unreachable', instances: [] });
+  }
+});
 
 // quick check route to verify prometheus proxy is reachable
 app.get('/api/prometheus/check', (req, res) => res.json({ success: true, message: 'prometheus proxy registered' }));
@@ -124,6 +161,14 @@ const startServer = async () => {
     console.log('[bootstrap] Socket.IO initialized');
   } catch (err) {
     console.warn('[bootstrap] Socket.IO init failed:', err.message);
+  }
+
+  try {
+    const discoveryInterval = parseInt(process.env.VM_DISCOVERY_INTERVAL || '30000', 10);
+    startPeriodicDiscovery(discoveryInterval);
+    console.log('[bootstrap] VM discovery service started');
+  } catch (err) {
+    console.warn('[bootstrap] VM discovery init failed:', err.message);
   }
 
   server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -316,14 +316,26 @@ app.get(['/disk', '/api/disk'], async (req, res) => {
   }
 });
 
-// Return list of instances (as reported by Prometheus labels)
+// Return only active instances from Prometheus using the up metric
 app.get(['/instances', '/api/instances'], async (req, res) => {
   try {
-    const response = await axios.get(`${PROM}/api/v1/label/instance/values`);
-    const instances = response.data?.data || [];
+    const query = 'up{job="vm-servers"} == 1';
+    const response = await axios.get(`${PROM}/api/v1/query`, { params: { query } });
+    const results = response.data?.data?.result || [];
+
+    const instances = [...new Set(
+      results
+        .filter((metric) => {
+          const value = metric.value?.[1];
+          return value === '1' || value === 1;
+        })
+        .map((metric) => metric.metric?.instance)
+        .filter(Boolean)
+    )];
+
     return res.json({ instances });
   } catch (err) {
-    return res.status(502).json({ error: err.message });
+    return res.status(502).json({ error: err.message, instances: [] });
   }
 });
 
