@@ -1,212 +1,74 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+const authService = require('../services/authService');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
-const { sendMail } = require('../utils/mailer');
-
-const safeUnlink = async (filePath) => {
-  if (!filePath) return;
-  try {
-    await fs.promises.unlink(filePath);
-  } catch (_) {
-    // ignore cleanup errors
-  }
-};
-
-const sanitizeUser = (user) => {
-  if (!user) return null;
-  return {
-    id: user._id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    avatar: user.avatar || null,
-  };
-};
-
-const avatarUrlToFsPath = (avatarUrl) => {
-  if (!avatarUrl) return null;
-  const raw = String(avatarUrl);
-  if (!raw.startsWith('/uploads/')) return null;
-  return path.join(__dirname, '..', raw.replace(/^\//, ''));
-};
-
-// Helper: generate a signed JWT
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE || '7d'
-  });
+const handleError = (res, err) => {
+  const status = err.statusCode || 500;
+  return errorResponse(res, err.message, status);
 };
 
 // @POST /api/auth/register
 const register = async (req, res) => {
   try {
-    const { name, email, password, role } = req.body || {};
-
-    const normalizedEmail = String(email || '').toLowerCase().trim();
-
-    const uploadedAvatarPath = req.file?.path;
-    const avatar = req.file ? `/uploads/avatars/${req.file.filename}` : undefined;
-
-    if (!name || !normalizedEmail || !password) {
-      await safeUnlink(uploadedAvatarPath);
-      return errorResponse(res, 'Missing required fields (name, email, password)', 400);
-    }
-
-    // Check if email already exists
-    const existing = await User.findOne({ email: normalizedEmail });
-    if (existing) {
-      await safeUnlink(uploadedAvatarPath);
-      return errorResponse(res, 'Email already in use', 400);
-    }
-
-    const user = await User.create({ name, email: normalizedEmail, password, role, avatar });
-
-    const token = generateToken(user._id);
-
-    return successResponse(res, {
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        avatar: user.avatar
-      }
-    }, 'User registered successfully', 201);
-
+    const payload = await authService.register({ body: req.body, file: req.file });
+    return successResponse(res, payload, 'User registered successfully', 201);
   } catch (err) {
-    await safeUnlink(req.file?.path);
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // @POST /api/auth/login
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    const normalizedEmail = String(email || '').toLowerCase().trim();
-    if (!normalizedEmail || !password) {
-      return errorResponse(res, 'Invalid credentials', 401);
-    }
-
-    // Explicitly select password since it has select: false in the model
-    const user = await User.findOne({ email: normalizedEmail }).select('+password');
-
-    if (!user || !user.isActive) {
-      return errorResponse(res, 'Invalid credentials', 401);
-    }
-
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      return errorResponse(res, 'Invalid credentials', 401);
-    }
-
-    const token = generateToken(user._id);
-
-    return successResponse(res, {
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        avatar: user.avatar
-      }
-    }, 'Login successful');
-
+    const payload = await authService.login(req.body || {});
+    return successResponse(res, payload, 'Login successful');
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // @GET /api/auth/me  — get currently logged-in user
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
-    if (!user) return errorResponse(res, 'User not found', 404);
-    return successResponse(res, sanitizeUser(user));
+    const user = await authService.getMe(req.user.id);
+    return successResponse(res, user);
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // @PUT /api/auth/me — update current user profile (name only for now)
 const updateMe = async (req, res) => {
   try {
-    const rawName = req.body?.name;
-    const payload = {};
-
-    if (rawName !== undefined) {
-      const nextName = String(rawName || '').trim();
-      if (nextName.length < 2) return errorResponse(res, 'Name must be at least 2 characters', 400);
-      payload.name = nextName;
-    }
-
-    if (Object.keys(payload).length === 0) {
-      const user = await User.findById(req.user.id);
-      if (!user) return errorResponse(res, 'User not found', 404);
-      return successResponse(res, sanitizeUser(user));
-    }
-
-    const user = await User.findByIdAndUpdate(req.user.id, payload, { new: true, runValidators: true });
-    if (!user) return errorResponse(res, 'User not found', 404);
-    return successResponse(res, sanitizeUser(user), 'Profile updated');
+    const user = await authService.updateMe({
+      userId: req.user.id,
+      name: req.body?.name
+    });
+    return successResponse(res, user, 'Profile updated');
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // @PUT /api/auth/me/avatar — update current user avatar
 const updateMyAvatar = async (req, res) => {
-  const uploadedAvatarPath = req.file?.path;
   try {
-    if (!req.file) return errorResponse(res, 'Avatar file is required', 400);
-
-    const user = await User.findById(req.user.id);
-    if (!user) {
-      await safeUnlink(uploadedAvatarPath);
-      return errorResponse(res, 'User not found', 404);
-    }
-
-    const previousAvatar = user.avatar;
-    user.avatar = `/uploads/avatars/${req.file.filename}`;
-    await user.save();
-
-    const previousFsPath = avatarUrlToFsPath(previousAvatar);
-    if (previousFsPath) {
-      await safeUnlink(previousFsPath);
-    }
-
-    return successResponse(res, sanitizeUser(user), 'Avatar updated');
+    const user = await authService.updateMyAvatar({ userId: req.user.id, file: req.file });
+    return successResponse(res, user, 'Avatar updated');
   } catch (err) {
-    await safeUnlink(uploadedAvatarPath);
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // @PUT /api/auth/change-password
 const changePassword = async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body;
-
-    const user = await User.findById(req.user.id).select('+password');
-
-    const isMatch = await user.comparePassword(currentPassword);
-    if (!isMatch) {
-      return errorResponse(res, 'Current password is incorrect', 400);
-    }
-
-    user.password = newPassword;
-    await user.save();  // triggers the pre-save hash hook
-
+    await authService.changePassword({
+      userId: req.user.id,
+      currentPassword: req.body?.currentPassword,
+      newPassword: req.body?.newPassword
+    });
     return successResponse(res, null, 'Password updated successfully');
-
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
@@ -214,76 +76,10 @@ const changePassword = async (req, res) => {
 // Body: { email }
 const forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body || {};
-    const rawEmail = String(email || '');
-    const normalizedEmail = rawEmail.trim().toLowerCase();
-
-    console.log('[forgot-password] Email reçu:', rawEmail);
-    console.log('[forgot-password] Email normalisé:', normalizedEmail);
-
-    if (!normalizedEmail) return errorResponse(res, 'Email is required', 400);
-
-    const user = await User.findOne({ email: normalizedEmail })
-      .select('+resetPasswordToken +resetPasswordExpires');
-    console.log('[forgot-password] User trouvé:', user ? { id: user._id, email: user.email, isActive: user.isActive } : null);
-
-    // Always return success to avoid user enumeration.
-    if (!user || !user.isActive) {
-      console.log('[forgot-password] Abandon: user absent ou inactif');
-      return successResponse(res, null, 'If the email exists, a reset link has been sent');
-    }
-
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
-
-    user.resetPasswordToken = hashedToken;
-    user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-    await user.save({ validateBeforeSave: false });
-
-    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
-    const resetUrl = `${clientUrl.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(rawToken)}`;
-
-    const subject = 'DCIM Platform — Reset your password';
-    const text = [
-      'You requested a password reset.',
-      '',
-      `Reset your password using this link (valid for 1 hour):`,
-      resetUrl,
-      '',
-      'If you did not request this, you can ignore this email.'
-    ].join('\n');
-
-    try {
-      console.log('[forgot-password] sendMail() start');
-      console.log('[forgot-password] Tentative d\'envoi à:', user.email);
-      const mailResult = await sendMail({ to: user.email, subject, text });
-
-      if (!mailResult.delivered) {
-        console.error('[forgot-password] ÉCHEC envoi email:', mailResult.error);
-        // Cleanup token so we don't leave a reset token that the user never received.
-        user.resetPasswordToken = undefined;
-        user.resetPasswordExpires = undefined;
-        await user.save({ validateBeforeSave: false });
-
-        // Still avoid enumeration; but surface a generic operational error.
-        return errorResponse(res, 'Unable to send reset email', 500);
-      }
-
-      console.log('[forgot-password] ✅ Email envoyé avec succès à:', user.email, 'MessageId:', mailResult.messageId);
-    } catch (mailErr) {
-      console.error('[forgot-password] EXCEPTION lors de l\'envoi:', mailErr.message);
-      // Cleanup token so we don't leave a reset token that the user never received.
-      user.resetPasswordToken = undefined;
-      user.resetPasswordExpires = undefined;
-      await user.save({ validateBeforeSave: false });
-
-      // Still avoid enumeration; but surface a generic operational error.
-      return errorResponse(res, 'Unable to send reset email', 500);
-    }
-
+    await authService.forgotPassword(req.body?.email);
     return successResponse(res, null, 'If the email exists, a reset link has been sent');
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
@@ -291,30 +87,10 @@ const forgotPassword = async (req, res) => {
 // Body: { token, password }
 const resetPassword = async (req, res) => {
   try {
-    const { token, password } = req.body || {};
-    if (!token || !password) {
-      return errorResponse(res, 'Token and password are required', 400);
-    }
-
-    const hashedToken = crypto.createHash('sha256').update(String(token)).digest('hex');
-
-    const user = await User.findOne({
-      resetPasswordToken: hashedToken,
-      resetPasswordExpires: { $gt: new Date() }
-    }).select('+password +resetPasswordToken +resetPasswordExpires');
-
-    if (!user || !user.isActive) {
-      return errorResponse(res, 'Invalid or expired reset token', 400);
-    }
-
-    user.password = password;
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpires = undefined;
-    await user.save();
-
+    await authService.resetPassword({ token: req.body?.token, password: req.body?.password });
     return successResponse(res, null, 'Password reset successful');
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
