@@ -92,7 +92,6 @@ const sendSupportAlert = async ({ kind, name, supportExpiry, notes, to }) => {
     console.log(`[supportNotifications] SUPPORT_ALERT_SKIP_EMAIL enabled; skipping email for ${kind} ${name}`);
     return { delivered: true, skipped: true };
   }
-
   const subject = `[DCIM] Support expire bientôt: ${kind} ${name}`;
   const note = formatNotes(notes);
   const text = [
@@ -167,13 +166,36 @@ const createInAppAlert = async ({ userIds, kind, assetId, name, supportExpiry })
   }
 };
 
+const isEnabled = () => ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_NOTIFICATIONS_ENABLED || '').toLowerCase());
+
+const isSameDay = (a, b) => a.toDateString() === b.toDateString();
+
+const startOfDay = (d) => { const dd = new Date(d); dd.setHours(0,0,0,0); return dd; };
+
+const getAlertDate = (supportExpiry) => {
+  // Mode test rapide: si TEST_SUPPORT_MINUTES_BEFORE est défini,
+  // on envoie l'alerte X minutes avant supportExpiry.
+  const testMinutes = Number(process.env.TEST_SUPPORT_MINUTES_BEFORE || 0);
+
+  if (testMinutes > 0) {
+    return new Date(new Date(supportExpiry).getTime() - testMinutes * 60 * 1000);
+  }
+
+  // Mode normal: 4 mois avant expiration
+  return addMonths(supportExpiry, -4);
+};
+
 const runOnce = async () => {
+  if (!isEnabled()) {
+    console.log('[supportNotifications] Disabled');
+    return { enabled: false };
+  }
   const forceInApp = ['1', 'true', 'yes', 'on'].includes(String(process.env.SUPPORT_ALERT_FORCE_INAPP || '').toLowerCase());
 
   const recipients = getRecipients();
   if (!recipients.length) {
     console.warn('[supportNotifications] No recipients configured');
-    return { delivered: false, reason: 'no-recipients' };
+    return { enabled: true, delivered: false, reason: 'no-recipients' };
   }
 
   const inAppRecipients = await buildInAppRecipients(recipients);
@@ -242,6 +264,11 @@ const runOnce = async () => {
 };
 
 const startSupportNotificationJob = () => {
+  if (!isEnabled()) {
+    console.log('[supportNotifications] Disabled by env SUPPORT_NOTIFICATIONS_ENABLED');
+    return null;
+  }
+
   const schedule = String(process.env.SUPPORT_ALERT_CRON || '0 9 * * 1').trim();
   const isValid = cron.validate(schedule);
   console.log('[supportNotifications] Cron valid:', isValid);
@@ -258,6 +285,12 @@ const startSupportNotificationJob = () => {
   }, { scheduled: true });
 
   console.log(`[supportNotifications] Scheduled (${schedule})`);
+
+  if (String(process.env.SUPPORT_NOTIFICATIONS_RUN_ON_STARTUP || '').toLowerCase() === 'true') {
+    runOnce()
+      .then((result) => console.log('[supportNotifications] Startup result:', result))
+      .catch((err) => console.warn('[supportNotifications] startup run failed:', err.message));
+  }
   console.log('[supportNotifications] Cron job created');
   task.start();
   console.log('[supportNotifications] Cron job started');

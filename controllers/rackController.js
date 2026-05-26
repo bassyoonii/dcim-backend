@@ -1,160 +1,43 @@
-const Rack = require('../models/Rack');
-const Server = require('../models/Server');
-const Switch = require('../models/Switch');
-const StorageBay = require('../models/StorageBay');
-const DataDomain = require('../models/DataDomain');
-const NetworkPort = require('../models/NetworkPort');
-const Cable = require('../models/Cable');
-const mongoose = require('mongoose');
+const rackService = require('../services/rackService');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
-const { logAction } = require('../utils/auditLog');
-const { parsePagination, parseSort } = require('../utils/queryHelpers');
-
-const normalizeRefId = (value) => {
-  if (!value) return undefined;
-
-  if (typeof value === 'object' && value?._id) {
-    return mongoose.Types.ObjectId.isValid(value._id) ? value._id : undefined;
-  }
-
-  if (typeof value === 'string') {
-    if (value === '[object Object]') return undefined;
-    if (value.startsWith('{') && value.endsWith('}')) {
-      try {
-        const parsed = JSON.parse(value);
-        const candidate = parsed?._id;
-        return mongoose.Types.ObjectId.isValid(candidate) ? candidate : undefined;
-      } catch (_) {
-        return undefined;
-      }
-    }
-    return mongoose.Types.ObjectId.isValid(value) ? value : undefined;
-  }
-
-  return undefined;
+const handleError = (res, err) => {
+  const status = err.statusCode || 500;
+  return errorResponse(res, err.message, status);
 };
 
 // GET /api/racks
 const getRacks = async (req, res) => {
   try {
-    const { datacenter, datacenterId, search, status } = req.query;
-    const filter = {};
-
-    const resolvedDatacenterId = normalizeRefId(datacenterId || datacenter);
-
-    if (resolvedDatacenterId) filter.datacenter = resolvedDatacenterId;
-    if (status) filter.status = status;
-    if (search) {
-      filter.$or = [{ name: { $regex: search, $options: 'i' } }];
-    }
-
-    const { page, limit, skip } = parsePagination(req.query);
-    const { sortBy, order, sort } = parseSort(req.query, ['name', 'totalU', 'occupiedU', 'status', 'createdAt']);
-
-    console.log('[Rack:getRacks] Request query', {
-      rawDatacenter: datacenter,
-      normalizedDatacenter: resolvedDatacenterId,
-      search,
-      filter,
-    });
-
-    const [racks, totalItems] = await Promise.all([
-      Rack.find(filter)
-      .populate('datacenter', 'name code')
-      .sort(sort)
-      .skip(skip)
-      .limit(limit),
-      Rack.countDocuments(filter)
-    ]);
-
-    console.log('[Rack:getRacks] Returning racks', {
-      count: racks.length,
-      rackIds: racks.map((r) => r._id.toString()),
-    });
-
-    return successResponse(res, {
-      items: racks,
-      pagination: {
-        page,
-        limit,
-        totalItems,
-        totalPages: Math.max(Math.ceil(totalItems / limit), 1),
-        hasNextPage: page * limit < totalItems,
-        hasPrevPage: page > 1
-      },
-      filters: {
-        datacenterId: resolvedDatacenterId || null,
-        status: status || null,
-        search: search || null
-      },
-      sorting: { sortBy, order: order === 1 ? 'asc' : 'desc' }
-    });
+    const payload = await rackService.getRacks(req.query);
+    return successResponse(res, payload);
   } catch (err) {
     console.error('[Rack:getRacks] Failed', {
       message: err.message,
       query: req.query,
       stack: err.stack,
     });
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // GET /api/racks/:id
 const getRack = async (req, res) => {
   try {
-    const rack = await Rack.findById(req.params.id)
-      .populate('datacenter', 'name code')
-      .populate('createdBy', 'name email');
-
-    if (!rack) return errorResponse(res, 'Rack not found', 404);
+    const rack = await rackService.getRackById(req.params.id);
     return successResponse(res, rack);
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // POST /api/racks
 const createRack = async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      console.error('[Rack:create] MongoDB is not connected. readyState=', mongoose.connection.readyState);
-      return errorResponse(res, 'Database is not connected', 503);
-    }
-
-    const datacenter = typeof req.body.datacenter === 'object'
-      ? req.body.datacenter?._id
-      : req.body.datacenter;
-
-    if (!datacenter) {
-      return errorResponse(res, 'Datacenter is required', 400);
-    }
-
-    const payload = {
-      ...req.body,
-      datacenter,
-      createdBy: req.user.id,
-    };
-
-    const rack = new Rack(payload);
-    await rack.save();
-
-    const persisted = await Rack.exists({ _id: rack._id });
-    if (!persisted) {
-      console.error('[Rack:create] Save returned but document not found', {
-        rackId: rack._id,
-        payload,
-      });
-      return errorResponse(res, 'Rack save verification failed', 500);
-    }
-
-    console.log('[Rack:create] Rack persisted', {
-      rackId: rack._id,
-      name: rack.name,
-      datacenter: rack.datacenter,
+    const rack = await rackService.createRack({
+      body: req.body,
+      userId: req.user.id,
+      ip: req.ip
     });
-
-    await logAction(req.user.id, 'CREATE', 'Rack', rack._id, req.body, req.ip);
-
     return successResponse(res, rack, 'Rack created', 201);
   } catch (err) {
     console.error('[Rack:create] Failed to save rack', {
@@ -169,43 +52,19 @@ const createRack = async (req, res) => {
     if (err.code === 11000) {
       return errorResponse(res, 'Rack name already exists in this datacenter', 409);
     }
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // PUT /api/racks/:id
 const updateRack = async (req, res) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      console.error('[Rack:update] MongoDB is not connected. readyState=', mongoose.connection.readyState);
-      return errorResponse(res, 'Database is not connected', 503);
-    }
-
-    const datacenter = typeof req.body.datacenter === 'object'
-      ? req.body.datacenter?._id
-      : req.body.datacenter;
-
-    const payload = {
-      ...req.body,
-      ...(datacenter ? { datacenter } : {}),
-    };
-
-    const rack = await Rack.findByIdAndUpdate(
-      req.params.id,
-      payload,
-      { new: true, runValidators: true }
-    );
-
-    if (!rack) return errorResponse(res, 'Rack not found', 404);
-
-    await logAction(req.user.id, 'UPDATE', 'Rack', rack._id, req.body, req.ip);
-
-    console.log('[Rack:update] Rack updated', {
-      rackId: rack._id,
-      name: rack.name,
-      datacenter: rack.datacenter,
+    const rack = await rackService.updateRack({
+      id: req.params.id,
+      body: req.body,
+      userId: req.user.id,
+      ip: req.ip
     });
-
     return successResponse(res, rack, 'Rack updated');
   } catch (err) {
     console.error('[Rack:update] Failed to update rack', {
@@ -221,22 +80,21 @@ const updateRack = async (req, res) => {
     if (err.code === 11000) {
       return errorResponse(res, 'Rack name already exists in this datacenter', 409);
     }
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // DELETE /api/racks/:id
 const deleteRack = async (req, res) => {
   try {
-    const rack = await Rack.findByIdAndDelete(req.params.id);
-
-    if (!rack) return errorResponse(res, 'Rack not found', 404);
-
-    await logAction(req.user.id, 'DELETE', 'Rack', req.params.id, {}, req.ip);
-
+    await rackService.deleteRack({
+      id: req.params.id,
+      userId: req.user.id,
+      ip: req.ip
+    });
     return successResponse(res, null, 'Rack deleted');
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
@@ -360,84 +218,30 @@ const loadRackTopology = async (rack) => {
 // GET /api/racks/:id/occupancy
 const getRackOccupancy = async (req, res) => {
   try {
-    const rack = await Rack.findById(req.params.id)
-      .populate('datacenter', 'name code')
-      .lean();
-
-    if (!rack) return errorResponse(res, 'Rack not found', 404);
-
-    const topology = await loadRackTopology(rack);
-
-    return successResponse(res, {
-      rack: {
-        id: rack._id,
-        name: rack.name,
-        datacenter: rack.datacenter,
-      },
-      occupancy: topology.occupancy,
-      ports: topology.portsSummary,
-    });
+    const payload = await rackService.getRackOccupancy(req.params.id);
+    return successResponse(res, payload);
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // GET /api/racks/:id/topology
 const getRackTopology = async (req, res) => {
   try {
-    const rack = await Rack.findById(req.params.id)
-      .populate('datacenter', 'name code')
-      .lean();
-
-    if (!rack) return errorResponse(res, 'Rack not found', 404);
-
-    const topology = await loadRackTopology(rack);
-
-    return successResponse(res, {
-      rack: {
-        id: rack._id,
-        name: rack.name,
-        totalU: rack.totalU,
-        datacenter: rack.datacenter,
-      },
-      ports: topology.ports,
-      cables: topology.cables,
-      topology: topology.topology,
-      portsSummary: topology.portsSummary,
-    });
+    const payload = await rackService.getRackTopology(req.params.id);
+    return successResponse(res, payload);
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
 // GET /api/racks/:id/3d
 const getRack3DData = async (req, res) => {
   try {
-    const rack = await Rack.findById(req.params.id)
-      .populate('datacenter', 'name code')
-      .lean();
-
-    if (!rack) return errorResponse(res, 'Rack not found', 404);
-
-    const topology = await loadRackTopology(rack);
-
-    return successResponse(res, {
-      rack: {
-        id: rack._id,
-        name: rack.name,
-        totalU: rack.totalU,
-        datacenter: rack.datacenter,
-      },
-      equipment: topology.equipment,
-      occupancy: topology.occupancy,
-      power: topology.power,
-      ports: topology.ports,
-      portsSummary: topology.portsSummary,
-      cables: topology.cables,
-      topology: topology.topology,
-    });
+    const payload = await rackService.getRack3DData(req.params.id);
+    return successResponse(res, payload);
   } catch (err) {
-    return errorResponse(res, err.message, 500);
+    return handleError(res, err);
   }
 };
 
