@@ -5,7 +5,6 @@ const Switch = require('../models/Switch');
 const StorageBay = require('../models/StorageBay');
 const DataDomain = require('../models/DataDomain');
 const NetworkPort = require('../models/NetworkPort');
-const Cable = require('../models/Cable');
 const { logAction } = require('../utils/auditLog');
 const { parsePagination, parseSort } = require('../utils/queryHelpers');
 
@@ -221,23 +220,12 @@ const loadRackTopology = async (rack) => {
   ]);
 
   const switchIds = switches.map((s) => s._id);
-  const [ports, cables] = await Promise.all([
-    switchIds.length
-      ? NetworkPort.find({ switch: { $in: switchIds } })
-        .select('portNumber switch speedGbps ipAddress vlanId vlanTag portType connectedDevice networkCard status description notes')
-        .populate('switch', 'name ipAddress')
-        .lean()
-      : [],
-    Cable.find({
-      $or: [
-        { 'network.sourceDevice.deviceId': { $in: switchIds } },
-        { 'network.destDevice.deviceId': { $in: switchIds } },
-        { 'power.poweredDevice.deviceId': { $in: switchIds } },
-      ]
-    })
-      .select('cableType network power notes')
-      .lean(),
-  ]);
+  const ports = switchIds.length
+    ? await NetworkPort.find({ switch: { $in: switchIds } })
+      .select('portNumber switch speedGbps ipAddress vlanId vlanTag portType connectedDevice networkCard status description notes')
+      .populate('switch', 'name ipAddress')
+      .lean()
+    : [];
 
   const equipment = [
     ...servers.map((s) => ({ ...s, equipmentType: 'Server' })),
@@ -270,30 +258,30 @@ const loadRackTopology = async (rack) => {
     ...dataDomains.map((s) => ({ id: `datadomain:${s._id}`, label: s.name, type: 'DataDomain' })),
   ];
 
-  const topologyLinks = cables.map((c, i) => {
-    if (c.cableType === 'Network') {
-      const source = c.network?.sourceDevice;
-      const target = c.network?.destDevice;
-      return {
-        id: `cable-net-${i}`,
-        cableType: 'Network',
-        source: source?.deviceId ? `${(source.deviceType || 'Other').toLowerCase()}:${source.deviceId}` : null,
-        target: target?.deviceId ? `${(target.deviceType || 'Other').toLowerCase()}:${target.deviceId}` : null,
-        speedGbps: c.network?.speedGbps || null,
-        medium: c.network?.medium || null,
-        color: c.network?.color || null,
-      };
-    }
+  const cables = [];
 
-    const target = c.power?.poweredDevice;
-    return {
-      id: `cable-power-${i}`,
-      cableType: 'Power',
-      source: `pdu:${c.power?.pdu || 'unknown'}:${c.power?.pduPort || 'unknown'}`,
-      target: target?.deviceId ? `${(target.deviceType || 'Other').toLowerCase()}:${target.deviceId}` : null,
-      medium: 'Power',
-    };
-  }).filter((l) => l.source && l.target);
+  const normalizeDeviceType = (value) => {
+    if (!value) return 'other';
+    if (value === 'StorageBay') return 'storage';
+    if (value === 'DataDomain') return 'datadomain';
+    return value.toLowerCase();
+  };
+
+  const topologyLinks = ports
+    .filter((p) => p.connectedDevice?.deviceId)
+    .map((p, i) => {
+      const switchId = p.switch?._id || p.switch;
+      return {
+        id: `port-link-${i}`,
+        cableType: 'Network',
+        source: switchId ? `switch:${switchId}` : null,
+        target: `${normalizeDeviceType(p.connectedDevice.deviceType)}:${p.connectedDevice.deviceId}`,
+        speedGbps: p.speedGbps || null,
+        medium: 'Ethernet',
+        portNumber: p.portNumber,
+      };
+    })
+    .filter((l) => l.source && l.target);
 
   return {
     equipment,

@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 const NetworkPort = require('../models/NetworkPort');
 const Switch = require('../models/Switch');
-const Cable = require('../models/Cable');
 const Server = require('../models/Server');
 const StorageBay = require('../models/StorageBay');
 const DataDomain = require('../models/DataDomain');
@@ -11,7 +10,6 @@ const { logAction } = require('../utils/auditLog');
 const { parsePagination, parseSort, buildPaginatedPayload } = require('../utils/queryHelpers');
 
 const SORT_FIELDS = ['portNumber', 'ipAddress', 'vlanId', 'status', 'createdAt'];
-const AUTO_CABLE_NOTE_PREFIX = '[AUTO] NetworkPort connection';
 
 const extractPortIndex = (portNumber) => {
   if (!portNumber) return null;
@@ -21,16 +19,6 @@ const extractPortIndex = (portNumber) => {
   if (!m) return null;
   const idx = Number(m[1]);
   return Number.isFinite(idx) && idx > 0 ? idx : null;
-};
-
-const normalizePortLabel = (value) => {
-  if (!value) return '';
-  const raw = String(value).trim();
-  if (!raw) return '';
-  if (/^\d+$/.test(raw)) return `Port ${raw}`;
-  const m = raw.match(/^\s*port\s*(\d+)\s*$/i);
-  if (m) return `Port ${m[1]}`;
-  return raw;
 };
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -54,92 +42,6 @@ const resolveDeviceIdByName = async ({ deviceType, deviceName }) => {
   return found?._id || null;
 };
 
-const upsertAutoCableForPort = async ({ portDoc, userId, ip }) => {
-  if (!portDoc) return;
-  const switchId = normalizeObjectId(portDoc.switch);
-  const portLabel = normalizePortLabel(portDoc.portNumber);
-  if (!switchId || !portLabel) return;
-
-  const connected = portDoc.connectedDevice;
-  const deviceType = connected?.deviceType;
-  const deviceName = connected?.deviceName;
-  const deviceId = connected?.deviceId;
-
-  if (!deviceType || !deviceName || !deviceId) return;
-
-  const existing = await Cable.findOne({
-    cableType: 'Network',
-    'network.sourceDevice.deviceType': 'Switch',
-    'network.sourceDevice.deviceId': switchId,
-    'network.sourceDevice.port': portLabel,
-  }).select('_id notes').lean();
-
-  if (existing && typeof existing.notes === 'string' && !existing.notes.startsWith(AUTO_CABLE_NOTE_PREFIX)) {
-    return;
-  }
-
-  const payload = {
-    cableType: 'Network',
-    network: {
-      sourceDevice: {
-        deviceType: 'Switch',
-        deviceId: switchId,
-        port: portLabel,
-      },
-      destDevice: {
-        deviceType,
-        deviceId,
-      },
-    },
-    notes: `${AUTO_CABLE_NOTE_PREFIX} (portId=${portDoc._id})`,
-    createdBy: userId,
-  };
-
-  const saved = await Cable.findOneAndUpdate(
-    {
-      cableType: 'Network',
-      'network.sourceDevice.deviceType': 'Switch',
-      'network.sourceDevice.deviceId': switchId,
-      'network.sourceDevice.port': portLabel,
-      $or: [
-        { notes: { $regex: `^${escapeRegExp(AUTO_CABLE_NOTE_PREFIX)}` } },
-        { notes: { $exists: false } },
-        { notes: '' },
-      ],
-    },
-    { $set: payload },
-    { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
-  );
-
-  try {
-    await logAction(userId, existing ? 'UPDATE' : 'CREATE', 'Cable', saved._id, payload, ip);
-  } catch {
-    // ignore audit failures
-  }
-};
-
-const deleteAutoCableForPort = async ({ portDoc, userId, ip }) => {
-  if (!portDoc) return;
-  const switchId = normalizeObjectId(portDoc.switch);
-  const portLabel = normalizePortLabel(portDoc.portNumber);
-  if (!switchId || !portLabel) return;
-
-  const existing = await Cable.findOne({
-    cableType: 'Network',
-    'network.sourceDevice.deviceType': 'Switch',
-    'network.sourceDevice.deviceId': switchId,
-    'network.sourceDevice.port': portLabel,
-    notes: { $regex: `^${escapeRegExp(AUTO_CABLE_NOTE_PREFIX)}` },
-  }).select('_id').lean();
-
-  if (!existing) return;
-  await Cable.findByIdAndDelete(existing._id);
-  try {
-    await logAction(userId, 'DELETE', 'Cable', existing._id, { auto: true }, ip);
-  } catch {
-    // ignore audit failures
-  }
-};
 
 const ensureSwitchPortsExist = async (switchId) => {
   const sw = await Switch.findById(switchId).select('totalPorts').lean();
@@ -453,13 +355,6 @@ const updateConnection = async ({ id, deviceType, deviceName, userId, ip }) => {
       err.statusCode = 404;
       throw err;
     }
-
-    try {
-      await deleteAutoCableForPort({ portDoc: before, userId, ip });
-    } catch {
-      // keep request successful
-    }
-
     await logAction(userId, 'UPDATE', 'NetworkPort', updated._id, { connectedDevice: null }, ip);
     return { data: updated, message: 'Network port connection cleared' };
   }
@@ -490,12 +385,6 @@ const updateConnection = async ({ id, deviceType, deviceName, userId, ip }) => {
     const err = new Error('Network port not found');
     err.statusCode = 404;
     throw err;
-  }
-
-  try {
-    await upsertAutoCableForPort({ portDoc: updated, userId, ip });
-  } catch {
-    // keep request successful
   }
 
   await logAction(userId, 'UPDATE', 'NetworkPort', updated._id, {

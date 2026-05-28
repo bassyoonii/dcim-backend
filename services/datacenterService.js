@@ -238,6 +238,26 @@ const getDatacenterLocations = async (query) => {
   return simple;
 };
 
+const getDatacentersMap = async () => {
+  const filter = {
+    'location.coordinates.lat': { $exists: true },
+    'location.coordinates.lng': { $exists: true }
+  };
+
+  const dcs = await Datacenter.find(filter)
+    .select('name location.coordinates')
+    .lean();
+
+  return (dcs || [])
+    .map((dc) => ({
+      id: String(dc._id),
+      name: dc.name || null,
+      lat: dc.location?.coordinates?.lat ?? null,
+      lng: dc.location?.coordinates?.lng ?? null
+    }))
+    .filter((dc) => Number.isFinite(dc.lat) && Number.isFinite(dc.lng));
+};
+
 const geocodeProxy = async (query) => {
   const q = (query.q || '').trim();
   if (!q) return null;
@@ -262,6 +282,7 @@ module.exports = {
   updateDatacenter,
   deleteDatacenter,
   getDatacenterLocations,
+  getDatacentersMap,
   geocodeProxy,
   geocodeReverse,
   mapMongooseError

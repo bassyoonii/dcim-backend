@@ -99,6 +99,7 @@ app.use('/api/auth',        require('./routes/auth'));
 app.use('/api/users',       require('./routes/users'));
 app.use('/api/audit-logs',  require('./routes/auditLogs'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/datacenters-map', require('./routes/datacentersMap'));
 app.use('/api/datacenters', require('./routes/datacenters'));
 app.use('/api/racks',       require('./routes/racks'));
 app.use('/api/servers',     require('./routes/servers'));

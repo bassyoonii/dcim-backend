@@ -102,9 +102,20 @@ const geocodeReverse = async (req, res) => {
   }
 };
 
+// GET /api/datacenters-map
+const getDatacentersMap = async (req, res) => {
+  try {
+    const payload = await datacenterService.getDatacentersMap();
+    return successResponse(res, payload);
+  } catch (err) {
+    return errorResponse(res, err.message, 500);
+  }
+};
+
 module.exports = {
   getDatacenters, getDatacenter,
   getDatacenterLocations,
+  getDatacentersMap,
   geocodeProxy,
   geocodeReverse,
   createDatacenter, updateDatacenter, deleteDatacenter
